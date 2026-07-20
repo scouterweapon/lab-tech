@@ -1,0 +1,109 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'self'; script-src 'self'; style-src 'self'"
+    />
+    <title>Lab Tech</title>
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body>
+    <header class="topbar">
+      <h1>Lab Tech<span class="accent">.</span></h1>
+      <p class="tagline" id="mode-line">Betting lab</p>
+      <button id="settings-toggle" class="ghost">Settings</button>
+    </header>
+
+    <section class="settings" id="settings" hidden>
+      <h2>Settings</h2>
+      <div class="settings-grid">
+        <label>
+          <span>The Odds API key (free at the-odds-api.com — unlocks live AU bookmaker odds)</span>
+          <input id="set-apikey" type="password" placeholder="Paste API key" />
+        </label>
+        <label>
+          <span>LineLab Discord webhook URL (posts picks to the channel)</span>
+          <input id="set-webhook" type="password" placeholder="https://discord.com/api/webhooks/…" />
+        </label>
+        <label class="narrow">
+          <span>Min odds</span>
+          <input id="set-min" type="number" step="0.05" />
+        </label>
+        <label class="narrow">
+          <span>Max odds</span>
+          <input id="set-max" type="number" step="0.05" />
+        </label>
+      </div>
+      <div class="settings-actions">
+        <button id="settings-save" class="primary">Save settings</button>
+        <span id="settings-status" class="hint"></span>
+      </div>
+    </section>
+
+    <main>
+      <section class="tiles" aria-label="Key numbers">
+        <div class="tile">
+          <p class="tile-label">Bankroll</p>
+          <p class="tile-value" id="tile-bankroll">—</p>
+          <p class="tile-sub" id="tile-bankroll-sub"></p>
+        </div>
+        <div class="tile">
+          <p class="tile-label">Record</p>
+          <p class="tile-value" id="tile-record">—</p>
+          <p class="tile-sub">wins · losses · pending</p>
+        </div>
+        <div class="tile">
+          <p class="tile-label">Return on stakes</p>
+          <p class="tile-value" id="tile-roi">—</p>
+          <p class="tile-sub">profit ÷ total staked, settled bets</p>
+        </div>
+        <div class="tile">
+          <p class="tile-label">Model</p>
+          <p class="tile-value" id="tile-model">v0</p>
+          <p class="tile-sub" id="tile-model-sub">not trained</p>
+        </div>
+      </section>
+
+      <section class="panel" aria-label="Profit over time">
+        <h2>Profit over time</h2>
+        <p class="panel-note">Cumulative profit across settled bets. Hover for detail.</p>
+        <div class="chart-wrap">
+          <svg id="chart" viewBox="0 0 720 220" preserveAspectRatio="none" role="img" aria-label="Cumulative profit line chart"></svg>
+          <div id="chart-tip" class="chart-tip" hidden></div>
+          <p id="chart-empty" class="empty" hidden>Settle at least two bets and the curve shows up here.</p>
+        </div>
+      </section>
+
+      <div class="columns">
+        <section class="panel" aria-label="Value board">
+          <div class="panel-head">
+            <h2>Value board</h2>
+            <button id="refresh-odds" class="primary">Refresh odds</button>
+          </div>
+          <p class="panel-note" id="board-note">
+            Best price per selection across AU bookmakers, filtered to your odds band.
+            Deep-dive research (form, H2H, matchups) happens with Claude before anything gets bet.
+          </p>
+          <div id="board"></div>
+        </section>
+
+        <section class="panel" aria-label="Bet log">
+          <h2>Bet log</h2>
+          <p class="panel-note">Every settled bet becomes training history for the model.</p>
+          <div id="bets"></div>
+        </section>
+      </div>
+    </main>
+
+    <footer>
+      <p>
+        Odds via The Odds API (AU region: Sportsbet, Bet365, Ladbrokes, PointsBet, Neds, TAB &amp; more).
+        Learning loop pending — bet responsibly; this is decision support, not a money printer.
+      </p>
+    </footer>
+
+    <script src="app.js"></script>
+  </body>
+</html>

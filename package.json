@@ -1,0 +1,42 @@
+{
+  "name": "lab-tech",
+  "productName": "Lab Tech",
+  "version": "0.1.0",
+  "description": "Lab Tech — a sports betting pick bot that learns what actually works. Skeleton build.",
+  "main": "main.js",
+  "type": "commonjs",
+  "scripts": {
+    "start": "electron .",
+    "dist": "electron-builder",
+    "publish": "electron-builder --publish=always"
+  },
+  "devDependencies": {
+    "electron": "^43.1.1",
+    "electron-builder": "^26.15.3"
+  },
+  "dependencies": {
+    "electron-updater": "^6.8.9"
+  },
+  "build": {
+    "appId": "com.scouterweapon.labtech",
+    "productName": "Lab Tech",
+    "files": [
+      "main.js",
+      "preload.cjs",
+      "engine/**/*",
+      "renderer/**/*"
+    ],
+    "win": {
+      "target": "nsis"
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true
+    },
+    "publish": {
+      "provider": "github",
+      "owner": "scouterweapon",
+      "repo": "lab-tech"
+    }
+  }
+}
