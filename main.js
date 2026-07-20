@@ -3,7 +3,16 @@ const path = require('node:path');
 const fs = require('node:fs');
 const { autoUpdater } = require('electron-updater');
 const { fetchCandidates } = require('./engine/odds');
-const { suppressSimilar, applySuppression, pruneLeftBets } = require('./engine/similar');
+const {
+  suppressSimilar,
+  applySuppression,
+  pruneLeftBets,
+  suggestMulti,
+  isDuplicateMulti,
+} = require('./engine/similar');
+const { learnFromSettledBet } = require('./engine/learning');
+
+const DEFAULT_AUTO_STAKE = 10;
 
 autoUpdater.autoDownload = true;
 autoUpdater.autoInstallOnAppQuit = true;
@@ -18,12 +27,15 @@ const DEFAULT_STATE = {
     discordWebhook: '',
     minOdds: 1.7,
     maxOdds: 2.5,
+    // Off by default — during the trial phase, qualifying multis wait for a
+    // manual "Use suggested multi" click. Flip on once you trust the calls.
+    autoLogQualifyingMultis: false,
   },
   model: {
     version: 0,
     updatedAt: null,
-    factors: [],
-    note: 'Learning loop not implemented yet — every settled bet is recorded so the future model has history to learn from.',
+    factors: {},
+    note: 'No settled bets yet — the model learns win rate and ROI per odds/sport/type bucket as bets settle.',
   },
 };
 
@@ -34,11 +46,18 @@ function statePath() {
 function loadState() {
   try {
     const raw = JSON.parse(fs.readFileSync(statePath(), 'utf8'));
-    return {
+    const merged = {
       ...DEFAULT_STATE,
       ...raw,
       settings: { ...DEFAULT_STATE.settings, ...raw.settings },
+      model: { ...DEFAULT_STATE.model, ...raw.model },
     };
+    // Older saves had model.factors as an array placeholder — reset to the
+    // bucketed object shape the learning loop uses.
+    if (!merged.model.factors || Array.isArray(merged.model.factors)) {
+      merged.model.factors = {};
+    }
+    return merged;
   } catch {
     return JSON.parse(JSON.stringify(DEFAULT_STATE));
   }
@@ -73,15 +92,9 @@ ipcMain.handle('settings:save', (_event, settings) => {
   return state;
 });
 
-ipcMain.handle('odds:refresh', async () => {
-  const board = await fetchCandidates(state.settings);
-  board.candidates = applySuppression(board.candidates, state.suppressed);
-  return board;
-});
-
-ipcMain.handle('bet:add', (_event, bet) => {
-  state.bets.unshift({
-    id: `bet-${Date.now().toString(36)}`,
+function createBetRecord(bet) {
+  return {
+    id: `bet-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`,
     placedAt: new Date().toISOString(),
     result: 'pending',
     sport: bet.sport ? String(bet.sport) : null,
@@ -95,7 +108,62 @@ ipcMain.handle('bet:add', (_event, bet) => {
     legs: Array.isArray(bet.legs) ? bet.legs.map(String) : null,
     notes: bet.notes ? String(bet.notes) : null,
     decision: null,
+    decidedAt: null,
+    auto: Boolean(bet.auto),
+  };
+}
+
+// Builds and logs the multi Lab Tech picked on its own, when auto-log is on.
+function autoLogMulti(suggestion, band) {
+  const record = createBetRecord({
+    sport: suggestion.legs[0].sport,
+    match: suggestion.legs[0].match,
+    market: 'Same-game multi',
+    selection: suggestion.legs.map((leg) => leg.selection).join(' + '),
+    book: suggestion.legs[0].book,
+    odds: suggestion.combined,
+    stake: DEFAULT_AUTO_STAKE,
+    type: 'multi',
+    legs: suggestion.legs.map((leg) => `${leg.selection} (${leg.market}) @ ${leg.odds.toFixed(2)}`),
+    notes:
+      `Auto-logged by Lab Tech — combined odds ${suggestion.combined.toFixed(2)} within your ` +
+      `${band.minOdds.toFixed(2)}–${band.maxOdds.toFixed(2)} band, +${suggestion.valueScore.toFixed(1)}% combined value vs market.`,
+    auto: true,
   });
+  state.bets.unshift(record);
+  return record;
+}
+
+async function refreshBoardAndMaybeAutoLog() {
+  const board = await fetchCandidates(state.settings);
+  board.candidates = applySuppression(board.candidates, state.suppressed);
+
+  const band = {
+    minOdds: Number(state.settings.minOdds) || 1.7,
+    maxOdds: Number(state.settings.maxOdds) || 2.5,
+  };
+  const suggestion = suggestMulti(board.candidates, { ...band, model: state.model });
+  board.suggestion = suggestion;
+  board.autoLogQualifyingMultis = Boolean(state.settings.autoLogQualifyingMultis);
+
+  if (
+    suggestion &&
+    !suggestion.single &&
+    state.settings.autoLogQualifyingMultis &&
+    !isDuplicateMulti(state.bets, suggestion)
+  ) {
+    board.autoLogged = autoLogMulti(suggestion, band);
+    suppressSimilar(state.suppressed, suggestion.legs[0].match);
+    saveState(state);
+  }
+
+  return board;
+}
+
+ipcMain.handle('odds:refresh', () => refreshBoardAndMaybeAutoLog());
+
+ipcMain.handle('bet:add', (_event, bet) => {
+  state.bets.unshift(createBetRecord(bet));
   saveState(state);
   return state;
 });
@@ -127,6 +195,7 @@ ipcMain.handle('bet:settle', (_event, { id, result }) => {
       state.bankroll -= bet.stake;
     }
     state.bankroll = Math.round(state.bankroll * 100) / 100;
+    state.model = learnFromSettledBet(state.model, bet);
     saveState(state);
   }
   return state;

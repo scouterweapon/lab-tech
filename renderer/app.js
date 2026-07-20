@@ -160,46 +160,39 @@ function renderChart(state) {
 
 /* ---------- value board ---------- */
 
-function suggestMulti(board) {
-  const groups = new Map();
-  for (const c of board.candidates) {
-    if (!groups.has(c.match)) groups.set(c.match, []);
-    groups.get(c.match).push(c);
-  }
-
-  const toLeg = (c) => ({ sport: c.sport, match: c.match, market: c.market, selection: c.selection, odds: c.bestOdds, book: c.bestBook });
-
-  let best = null;
-  for (const cands of groups.values()) {
-    if (cands.length < 2) continue;
-    const legs = cands.map(toLeg);
-    const valueScore = cands.reduce((sum, c) => sum + c.valuePct, 0);
-    if (!best || valueScore > best.valueScore) {
-      best = { legs, combined: combineLegs(legs), valueScore, single: false };
-    }
-  }
-  if (best) return best;
-
-  // No match has two legs in band yet — surface the single best-value pick
-  // as a starter so there's still something to build a multi from.
-  const top = [...board.candidates].sort((a, b) => b.valuePct - a.valuePct)[0];
-  if (!top) return null;
-  return { legs: [toLeg(top)], combined: top.bestOdds, valueScore: top.valuePct, single: true };
-}
-
+// Suggestion and (if auto-log is on) the logging itself both happen in
+// main.js so the same odds band + learned scoring apply whether you're
+// looking or not. This just renders whatever board.suggestion says.
 function renderSuggestion(board) {
   const root = document.getElementById('multi-suggestion');
   root.replaceChildren();
 
-  const suggestion = suggestMulti(board);
+  const suggestion = board.suggestion;
   if (!suggestion) {
     root.hidden = true;
     return;
   }
   root.hidden = false;
 
+  if (board.autoLogged) {
+    root.append(el('h3', 'slip-title', `✓ Auto-logged same-game multi — ${suggestion.legs[0].match}`));
+    const legs = el('ul', 'bet-legs');
+    for (const leg of suggestion.legs) {
+      legs.append(el('li', null, `${leg.selection} (${leg.market}) @ ${leg.odds.toFixed(2)} — ${leg.book}`));
+    }
+    root.append(legs);
+    root.append(
+      el(
+        'p',
+        'pick-detail',
+        `Combined odds ${suggestion.combined.toFixed(2)} · +${suggestion.valueScore.toFixed(1)}% combined value vs market · logged to your bet log below for ${moneyFmt.format(board.autoLogged.stake)}.`,
+      ),
+    );
+    return;
+  }
+
   const title = suggestion.single
-    ? `Best value right now — ${suggestion.legs[0].match} (needs a second leg from this match for a multi)`
+    ? `Best value right now — ${suggestion.legs[0].match} (needs a second leg from this match, within your odds band, for a multi)`
     : `Suggested same-game multi — ${suggestion.legs[0].match}`;
   root.append(el('h3', 'slip-title', title));
 
@@ -215,9 +208,13 @@ function renderSuggestion(board) {
       'pick-detail',
       suggestion.single
         ? `Best single value: +${suggestion.valueScore.toFixed(1)}% vs market`
-        : `Combined odds ${suggestion.combined.toFixed(2)} · +${suggestion.valueScore.toFixed(1)}% combined value vs market`,
+        : `Combined odds ${suggestion.combined.toFixed(2)} (within your odds band) · +${suggestion.valueScore.toFixed(1)}% combined value vs market`,
     ),
   );
+
+  if (!suggestion.single && !board.autoLogQualifyingMultis) {
+    root.append(el('p', 'hint', 'Auto-log is off — turn it on in Settings to skip this click next time.'));
+  }
 
   const useBtn = el('button', 'primary', suggestion.single ? 'Start multi with this leg' : 'Use suggested multi');
   useBtn.addEventListener('click', () => {
@@ -369,8 +366,18 @@ function renderMultiSlip() {
   root.append(legs);
 
   const combined = combineLegs(multiSlip);
+  const minOdds = Number(currentState?.settings?.minOdds) || 1.7;
+  const maxOdds = Number(currentState?.settings?.maxOdds) || 2.5;
+  const inBand = combined >= minOdds && combined <= maxOdds;
+
   const actions = el('div', 'pick-actions');
-  actions.append(el('span', 'pick-odds', `Combined odds: ${combined.toFixed(2)}`));
+  actions.append(
+    el(
+      'span',
+      'pick-odds',
+      `Combined odds: ${combined.toFixed(2)}${inBand ? '' : ` (outside your ${minOdds.toFixed(2)}–${maxOdds.toFixed(2)} band)`}`,
+    ),
+  );
 
   const stake = el('input', 'stake-input');
   stake.type = 'number';
@@ -381,7 +388,7 @@ function renderMultiSlip() {
   const logBtn = el('button', 'primary', 'Log same-game multi');
   logBtn.addEventListener('click', async () => {
     const amount = Number(stake.value);
-    if (!Number.isFinite(amount) || amount <= 0 || multiSlip.length < 2) return;
+    if (!Number.isFinite(amount) || amount <= 0 || multiSlip.length < 2 || !inBand) return;
     currentState = await window.labtech.addBet({
       sport: multiSlip[0].sport,
       match: multiSlip[0].match,
@@ -400,7 +407,8 @@ function renderMultiSlip() {
     renderMultiSlip();
     renderBoard(currentBoard);
   });
-  if (multiSlip.length < 2) logBtn.disabled = true;
+  if (multiSlip.length < 2 || !inBand) logBtn.disabled = true;
+  logBtn.title = !inBand ? `Combined odds must be between ${minOdds.toFixed(2)} and ${maxOdds.toFixed(2)}` : '';
 
   const clearBtn = el('button', 'ghost', 'Clear slip');
   clearBtn.addEventListener('click', () => {
@@ -508,6 +516,7 @@ function wireSettings(state) {
   document.getElementById('set-webhook').value = state.settings.discordWebhook;
   document.getElementById('set-min').value = state.settings.minOdds;
   document.getElementById('set-max').value = state.settings.maxOdds;
+  document.getElementById('set-auto-multi').checked = Boolean(state.settings.autoLogQualifyingMultis);
 
   document.getElementById('settings-save').addEventListener('click', async () => {
     currentState = await window.labtech.saveSettings({
@@ -515,15 +524,29 @@ function wireSettings(state) {
       discordWebhook: document.getElementById('set-webhook').value.trim(),
       minOdds: Number(document.getElementById('set-min').value) || 1.7,
       maxOdds: Number(document.getElementById('set-max').value) || 2.5,
+      autoLogQualifyingMultis: document.getElementById('set-auto-multi').checked,
     });
     document.getElementById('settings-status').textContent = 'saved ✓ — refreshing odds…';
-    const board = await window.labtech.refreshOdds();
-    renderBoard(board);
+    await refreshOddsAndBets();
     document.getElementById('settings-status').textContent = 'saved ✓';
   });
 }
 
 /* ---------- init ---------- */
+
+// A qualifying multi can get auto-logged as a side effect of refreshing
+// odds (main.js does it), so every refresh also re-syncs the bet log.
+async function refreshOddsAndBets() {
+  const board = await window.labtech.refreshOdds();
+  renderBoard(board);
+  if (board.autoLogged) {
+    currentState = await window.labtech.getState();
+    renderTiles(currentState);
+    renderBets(currentState);
+    renderChart(currentState);
+  }
+  return board;
+}
 
 async function init() {
   currentState = await window.labtech.getState();
@@ -534,7 +557,7 @@ async function init() {
 
   document.getElementById('refresh-odds').addEventListener('click', async () => {
     document.getElementById('mode-line').textContent = 'Betting lab · refreshing odds…';
-    renderBoard(await window.labtech.refreshOdds());
+    await refreshOddsAndBets();
   });
 
   // A "leaving" pick gets a 5-minute thinking window, then main removes it
@@ -546,7 +569,7 @@ async function init() {
     renderChart(currentState);
   });
 
-  renderBoard(await window.labtech.refreshOdds());
+  await refreshOddsAndBets();
 }
 
 init();
