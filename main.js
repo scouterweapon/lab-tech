@@ -1,16 +1,16 @@
 const { app, BrowserWindow, ipcMain } = require('electron');
 const path = require('node:path');
-const fs = require('node:fs');
 const { autoUpdater } = require('electron-updater');
 const { fetchCandidates } = require('./engine/odds');
 const {
   suppressSimilar,
   applySuppression,
-  pruneLeftBets,
+  isPastLeaveWindow,
   suggestMulti,
   isDuplicateMulti,
 } = require('./engine/similar');
-const { learnFromSettledBet } = require('./engine/learning');
+const { computeBankroll, computeModel } = require('./engine/learning');
+const cloud = require('./engine/cloud');
 
 const DEFAULT_AUTO_STAKE = 10;
 // ~96 refreshes/day so a month of unattended running (5 sports, 1 credit
@@ -18,84 +18,78 @@ const DEFAULT_AUTO_STAKE = 10;
 // with room to spare. Free while running on sample data (no network call).
 const AUTO_REFRESH_MS = 15 * 60 * 1000;
 
+const DEFAULT_SETTINGS = {
+  oddsApiKey: '',
+  discordWebhook: '',
+  minOdds: 1.7,
+  maxOdds: 2.5,
+  // Off by default — during the trial phase, qualifying multis wait for a
+  // manual "Use suggested multi" click. Flip on once you trust the calls.
+  autoLogQualifyingMultis: false,
+};
+
 autoUpdater.autoDownload = true;
 autoUpdater.autoInstallOnAppQuit = true;
 
-const DEFAULT_STATE = {
-  startingBankroll: 1000,
-  bankroll: 1000,
-  bets: [],
-  suppressed: {},
-  settings: {
-    oddsApiKey: '',
-    discordWebhook: '',
-    minOdds: 1.7,
-    maxOdds: 2.5,
-    // Off by default — during the trial phase, qualifying multis wait for a
-    // manual "Use suggested multi" click. Flip on once you trust the calls.
-    autoLogQualifyingMultis: false,
-  },
-  model: {
-    version: 0,
-    updatedAt: null,
-    factors: {},
-    note: 'No settled bets yet — the model learns win rate and ROI per odds/sport/type bucket as bets settle.',
-  },
-};
-
-function statePath() {
-  return path.join(app.getPath('userData'), 'labtech-state.json');
-}
-
-function loadState() {
-  try {
-    const raw = JSON.parse(fs.readFileSync(statePath(), 'utf8'));
-    const merged = {
-      ...DEFAULT_STATE,
-      ...raw,
-      settings: { ...DEFAULT_STATE.settings, ...raw.settings },
-      model: { ...DEFAULT_STATE.model, ...raw.model },
-    };
-    // Older saves had model.factors as an array placeholder — reset to the
-    // bucketed object shape the learning loop uses.
-    if (!merged.model.factors || Array.isArray(merged.model.factors)) {
-      merged.model.factors = {};
-    }
-    return merged;
-  } catch {
-    return JSON.parse(JSON.stringify(DEFAULT_STATE));
-  }
-}
-
-function saveState(state) {
-  fs.mkdirSync(path.dirname(statePath()), { recursive: true });
-  fs.writeFileSync(statePath(), JSON.stringify(state, null, 2));
-}
-
-let state;
 let mainWindow;
+// Board dedup only — which match to hide from the value board for a bit.
+// Kept local per install; it's a UI convenience, not shared ledger data.
+const suppressed = {};
 
-function sweepLeftBets() {
-  if (!state) return;
-  const before = state.bets.length;
-  state.bets = pruneLeftBets(state.bets);
-  if (state.bets.length !== before) {
-    saveState(state);
-    mainWindow?.webContents.send('bets:pruned', state);
+// Bets, bankroll, settings and the model all live in Supabase now, shared
+// by every Lab Tech install. This assembles the same shape the renderer
+// always expected, fresh from the shared source of truth on every call.
+async function loadFullState() {
+  const [bets, appState] = await Promise.all([cloud.fetchBets(), cloud.fetchAppState()]);
+  const settings = { ...DEFAULT_SETTINGS, ...appState.settings };
+  return {
+    startingBankroll: appState.startingBankroll,
+    bankroll: computeBankroll(appState.startingBankroll, bets),
+    bets,
+    suppressed,
+    settings,
+    model: computeModel(bets),
+  };
+}
+
+async function broadcastState() {
+  if (!mainWindow) return;
+  try {
+    mainWindow.webContents.send('state:updated', await loadFullState());
+  } catch (err) {
+    console.error('broadcastState failed:', err.message);
   }
 }
 
-ipcMain.handle('state:get', () => {
-  sweepLeftBets();
-  return state;
+// A "leaving" verdict gets a 5-minute thinking window, then it's deleted
+// from the shared ledger for good — checked well inside that window so it
+// disappears for both installs at roughly the same time.
+async function sweepLeftBets() {
+  let bets;
+  try {
+    bets = await cloud.fetchBets();
+  } catch (err) {
+    console.error('sweepLeftBets fetch failed:', err.message);
+    return false;
+  }
+  const expired = bets.filter((b) => isPastLeaveWindow(b));
+  for (const bet of expired) {
+    await cloud.deleteBetRow(bet.id).catch((err) => console.error('sweepLeftBets delete failed:', err.message));
+  }
+  return expired.length > 0;
+}
+
+ipcMain.handle('state:get', async () => {
+  await sweepLeftBets();
+  return loadFullState();
 });
 
 ipcMain.handle('app:version', () => app.getVersion());
 
-ipcMain.handle('settings:save', (_event, settings) => {
-  state.settings = { ...state.settings, ...settings };
-  saveState(state);
-  return state;
+ipcMain.handle('settings:save', async (_event, settings) => {
+  const appState = await cloud.fetchAppState();
+  await cloud.updateAppState({ settings: { ...appState.settings, ...settings } });
+  return loadFullState();
 });
 
 function createBetRecord(bet) {
@@ -120,8 +114,8 @@ function createBetRecord(bet) {
 }
 
 // Builds and logs the multi Lab Tech picked on its own, when auto-log is on.
-function autoLogMulti(suggestion, band) {
-  const record = createBetRecord({
+function buildAutoMultiRecord(suggestion, band) {
+  return createBetRecord({
     sport: suggestion.legs[0].sport,
     match: suggestion.legs[0].match,
     market: 'Same-game multi',
@@ -136,13 +130,12 @@ function autoLogMulti(suggestion, band) {
       `${band.minOdds.toFixed(2)}–${band.maxOdds.toFixed(2)} band, +${suggestion.valueScore.toFixed(1)}% combined value vs market.`,
     auto: true,
   });
-  state.bets.unshift(record);
-  return record;
 }
 
 async function refreshBoardAndMaybeAutoLog() {
+  const state = await loadFullState();
   const board = await fetchCandidates(state.settings);
-  board.candidates = applySuppression(board.candidates, state.suppressed);
+  board.candidates = applySuppression(board.candidates, suppressed);
 
   const band = {
     minOdds: Number(state.settings.minOdds) || 1.7,
@@ -150,7 +143,7 @@ async function refreshBoardAndMaybeAutoLog() {
   };
   // Multi legs come from the wider (lower-floor) pool, not board.candidates —
   // two picks each already >= minOdds would always multiply past maxOdds.
-  const legPool = applySuppression(board.legs || [], state.suppressed);
+  const legPool = applySuppression(board.legs || [], suppressed);
   const suggestion = suggestMulti(legPool, { ...band, model: state.model });
   board.suggestion = suggestion;
   delete board.legs;
@@ -162,9 +155,10 @@ async function refreshBoardAndMaybeAutoLog() {
     state.settings.autoLogQualifyingMultis &&
     !isDuplicateMulti(state.bets, suggestion)
   ) {
-    board.autoLogged = autoLogMulti(suggestion, band);
-    suppressSimilar(state.suppressed, suggestion.legs[0].match);
-    saveState(state);
+    const record = buildAutoMultiRecord(suggestion, band);
+    await cloud.insertBet(record);
+    suppressSimilar(suppressed, suggestion.legs[0].match);
+    board.autoLogged = record;
   }
 
   return board;
@@ -172,53 +166,39 @@ async function refreshBoardAndMaybeAutoLog() {
 
 ipcMain.handle('odds:refresh', () => refreshBoardAndMaybeAutoLog());
 
-ipcMain.handle('bet:add', (_event, bet) => {
-  state.bets.unshift(createBetRecord(bet));
-  saveState(state);
-  return state;
+ipcMain.handle('bet:add', async (_event, bet) => {
+  await cloud.insertBet(createBetRecord(bet));
+  return loadFullState();
 });
 
-ipcMain.handle('bet:decide', (_event, { id, decision }) => {
-  const bet = state.bets.find((b) => b.id === id);
-  if (bet && (decision === 'taking' || decision === 'leaving' || decision === null)) {
-    bet.decision = decision;
-    bet.decidedAt = decision ? new Date().toISOString() : null;
-    if (decision === 'taking' || decision === 'leaving') {
+ipcMain.handle('bet:decide', async (_event, { id, decision, match }) => {
+  if (decision === 'taking' || decision === 'leaving' || decision === null) {
+    await cloud.updateBet(id, { decision, decidedAt: decision ? new Date().toISOString() : null });
+    if ((decision === 'taking' || decision === 'leaving') && match) {
       // Once you've made the call on a match, other picks from that same
       // match are noise for a bit — hide them instead of re-surfacing.
-      suppressSimilar(state.suppressed, bet.match);
+      suppressSimilar(suppressed, match);
     }
-    sweepLeftBets();
-    saveState(state);
+    await sweepLeftBets();
   }
-  return state;
+  return loadFullState();
 });
 
-ipcMain.handle('bet:delete', (_event, id) => {
-  state.bets = state.bets.filter((b) => b.id !== id);
-  saveState(state);
-  return state;
+ipcMain.handle('bet:delete', async (_event, id) => {
+  await cloud.deleteBetRow(id);
+  return loadFullState();
 });
 
-ipcMain.handle('bet:settle', (_event, { id, result }) => {
-  const bet = state.bets.find((b) => b.id === id && b.result === 'pending');
-  if (bet && (result === 'win' || result === 'loss')) {
-    bet.result = result;
-    bet.settledAt = new Date().toISOString();
-    if (result === 'win') {
-      state.bankroll += bet.stake * (bet.odds - 1);
-    } else {
-      state.bankroll -= bet.stake;
-    }
-    state.bankroll = Math.round(state.bankroll * 100) / 100;
-    state.model = learnFromSettledBet(state.model, bet);
-    saveState(state);
+ipcMain.handle('bet:settle', async (_event, { id, result }) => {
+  if (result === 'win' || result === 'loss') {
+    await cloud.updateBet(id, { result, settledAt: new Date().toISOString() });
   }
-  return state;
+  return loadFullState();
 });
 
 ipcMain.handle('discord:post', async (_event, candidate) => {
-  const webhook = state.settings.discordWebhook;
+  const appState = await cloud.fetchAppState();
+  const webhook = appState.settings.discordWebhook;
   if (!webhook) {
     return { ok: false, error: 'No Discord webhook set — add it in Settings.' };
   }
@@ -263,16 +243,20 @@ function createWindow() {
 }
 
 app.whenReady().then(() => {
-  state = loadState();
   createWindow();
 
+  // Live push whenever either install changes the shared bets/settings.
+  cloud.subscribe(() => broadcastState());
+
   // Checked well inside the 5-minute "leaving" window so removal feels prompt.
-  setInterval(sweepLeftBets, 15000);
+  setInterval(async () => {
+    if (await sweepLeftBets()) broadcastState();
+  }, 15000);
 
   // Runs the odds board + suggestion + auto-log on its own, so Lab Tech
   // keeps working (and keeps feeding the model) without anyone watching.
   setInterval(async () => {
-    if (!state || !mainWindow) return;
+    if (!mainWindow) return;
     try {
       const board = await refreshBoardAndMaybeAutoLog();
       mainWindow.webContents.send('board:auto-refresh', board);

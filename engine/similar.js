@@ -33,10 +33,12 @@ function combineLegs(legs) {
 }
 
 // A "leaving" verdict gets a thinking window, then the entry is dropped for good.
+function isPastLeaveWindow(bet, now = Date.now(), ttlMs = SUPPRESS_MS) {
+  return Boolean(bet.decision === 'leaving' && bet.decidedAt && now - new Date(bet.decidedAt).getTime() >= ttlMs);
+}
+
 function pruneLeftBets(bets, now = Date.now(), ttlMs = SUPPRESS_MS) {
-  return bets.filter(
-    (b) => !(b.decision === 'leaving' && b.decidedAt && now - new Date(b.decidedAt).getTime() >= ttlMs),
-  );
+  return bets.filter((b) => !isPastLeaveWindow(b, now, ttlMs));
 }
 
 // Picks the best same-game multi on the board — legs must share a match,
@@ -117,6 +119,7 @@ module.exports = {
   pruneExpired,
   applySuppression,
   combineLegs,
+  isPastLeaveWindow,
   pruneLeftBets,
   suggestMulti,
   isDuplicateMulti,

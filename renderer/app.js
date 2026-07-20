@@ -497,7 +497,7 @@ function renderBets(state) {
 
 async function decide(bet, decision) {
   const next = bet.decision === decision ? null : decision;
-  currentState = await window.labtech.decideBet(bet.id, next);
+  currentState = await window.labtech.decideBet(bet.id, next, bet.match);
   renderBets(currentState);
 }
 
@@ -578,9 +578,10 @@ async function init() {
     await refreshOddsAndBets();
   });
 
-  // A "leaving" pick gets a 5-minute thinking window, then main removes it
-  // in the background and pushes the trimmed state here — no refresh needed.
-  window.labtech.onBetsPruned((state) => {
+  // Bets/bankroll/model live in the shared cloud store now — this fires
+  // whenever either install changes something (or a "leaving" pick's
+  // 5-minute window expires), so both apps stay in sync live.
+  window.labtech.onStateUpdated((state) => {
     currentState = state;
     renderTiles(currentState);
     renderBets(currentState);

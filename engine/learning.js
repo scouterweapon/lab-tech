@@ -55,4 +55,34 @@ function learnedScore(betLike, model) {
   return baseline * (1 - confidence) + learnedRoi * confidence;
 }
 
-module.exports = { oddsBand, factorKeysFor, learnFromSettledBet, learnedScore };
+// Bankroll and the model are both derived from the shared bets table on
+// every read rather than stored as separately-mutated fields. With two
+// installs writing to the same cloud ledger, a stored, incrementally
+// updated number can lose an update if both sides settle a bet at once;
+// a value computed fresh from the full (consistent, server-side) history
+// can't drift out of sync the same way.
+function computeBankroll(startingBankroll, bets) {
+  const profit = bets.reduce((total, bet) => {
+    if (bet.result === 'win') return total + bet.stake * (bet.odds - 1);
+    if (bet.result === 'loss') return total - bet.stake;
+    return total;
+  }, 0);
+  return Math.round((startingBankroll + profit) * 100) / 100;
+}
+
+function computeModel(bets) {
+  const settled = bets
+    .filter((b) => b.result === 'win' || b.result === 'loss')
+    .sort((a, b) => new Date(a.settledAt) - new Date(b.settledAt));
+
+  let model = { version: 0, updatedAt: null, factors: {} };
+  for (const bet of settled) {
+    model = learnFromSettledBet(model, bet);
+  }
+  if (settled.length === 0) {
+    model.note = 'No settled bets yet — the model learns win rate and ROI per odds/sport/type bucket as bets settle.';
+  }
+  return model;
+}
+
+module.exports = { oddsBand, factorKeysFor, learnFromSettledBet, learnedScore, computeBankroll, computeModel };
