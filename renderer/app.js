@@ -5,6 +5,12 @@ const moneyFmt = new Intl.NumberFormat('en-AU', {
 
 let currentState = null;
 let currentBoard = null;
+let multiSlip = [];
+
+function combineLegs(legs) {
+  const combined = legs.reduce((acc, leg) => acc * leg.odds, 1);
+  return Math.round(combined * 100) / 100;
+}
 
 function el(tag, className, text) {
   const node = document.createElement(tag);
@@ -229,10 +235,113 @@ function renderBoard(board) {
       status.textContent = res.ok ? 'posted ✓' : res.error;
     });
 
-    actions.append(stake, logBtn, discordBtn, status);
+    const inSlip = multiSlip.some((leg) => leg.match === c.match && leg.selection === c.selection);
+    const blockedMatch = multiSlip.length > 0 && multiSlip[0].match !== c.match;
+    const multiBtn = el('button', 'ghost', inSlip ? 'Remove from multi' : 'Add to multi');
+    multiBtn.disabled = blockedMatch && !inSlip;
+    multiBtn.title = blockedMatch && !inSlip ? 'Same-game multi only — clear the slip to start a new match' : '';
+    multiBtn.addEventListener('click', () => {
+      if (inSlip) {
+        removeFromSlip(c);
+      } else {
+        addToSlip(c);
+      }
+    });
+
+    actions.append(stake, logBtn, discordBtn, status, multiBtn);
     wrap.append(head, detail, research, actions);
     root.append(wrap);
   }
+}
+
+/* ---------- same-game multi slip ---------- */
+
+function addToSlip(c) {
+  if (multiSlip.length > 0 && multiSlip[0].match !== c.match) return;
+  if (multiSlip.some((leg) => leg.match === c.match && leg.selection === c.selection)) return;
+  multiSlip.push({
+    sport: c.sport,
+    match: c.match,
+    market: c.market,
+    selection: c.selection,
+    odds: c.bestOdds,
+    book: c.bestBook,
+  });
+  renderMultiSlip();
+  renderBoard(currentBoard);
+}
+
+function removeFromSlip(c) {
+  multiSlip = multiSlip.filter((leg) => !(leg.match === c.match && leg.selection === c.selection));
+  renderMultiSlip();
+  renderBoard(currentBoard);
+}
+
+function renderMultiSlip() {
+  const root = document.getElementById('multi-slip');
+  root.replaceChildren();
+
+  if (multiSlip.length === 0) {
+    root.hidden = true;
+    return;
+  }
+  root.hidden = false;
+
+  root.append(el('h3', 'slip-title', `Same-game multi — ${multiSlip[0].match}`));
+
+  const legs = el('ul', 'bet-legs');
+  for (const leg of multiSlip) {
+    const item = el('li', null, `${leg.selection} (${leg.market}) @ ${leg.odds.toFixed(2)} — ${leg.book} `);
+    const removeBtn = el('button', 'ghost', 'Remove');
+    removeBtn.addEventListener('click', () => removeFromSlip(leg));
+    item.append(removeBtn);
+    legs.append(item);
+  }
+  root.append(legs);
+
+  const combined = combineLegs(multiSlip);
+  const actions = el('div', 'pick-actions');
+  actions.append(el('span', 'pick-odds', `Combined odds: ${combined.toFixed(2)}`));
+
+  const stake = el('input', 'stake-input');
+  stake.type = 'number';
+  stake.min = '1';
+  stake.value = '10';
+  stake.setAttribute('aria-label', 'Multi stake');
+
+  const logBtn = el('button', 'primary', 'Log same-game multi');
+  logBtn.addEventListener('click', async () => {
+    const amount = Number(stake.value);
+    if (!Number.isFinite(amount) || amount <= 0 || multiSlip.length < 2) return;
+    currentState = await window.labtech.addBet({
+      sport: multiSlip[0].sport,
+      match: multiSlip[0].match,
+      market: 'Same-game multi',
+      selection: multiSlip.map((leg) => leg.selection).join(' + '),
+      book: multiSlip[0].book,
+      odds: combined,
+      stake: amount,
+      type: 'multi',
+      legs: multiSlip.map((leg) => `${leg.selection} (${leg.market}) @ ${leg.odds.toFixed(2)}`),
+    });
+    multiSlip = [];
+    renderTiles(currentState);
+    renderBets(currentState);
+    renderChart(currentState);
+    renderMultiSlip();
+    renderBoard(currentBoard);
+  });
+  if (multiSlip.length < 2) logBtn.disabled = true;
+
+  const clearBtn = el('button', 'ghost', 'Clear slip');
+  clearBtn.addEventListener('click', () => {
+    multiSlip = [];
+    renderMultiSlip();
+    renderBoard(currentBoard);
+  });
+
+  actions.append(stake, logBtn, clearBtn);
+  root.append(actions);
 }
 
 /* ---------- bet log ---------- */

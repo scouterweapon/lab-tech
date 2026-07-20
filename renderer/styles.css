@@ -413,6 +413,20 @@ button.primary:hover {
   padding: 10px 12px;
 }
 
+.multi-slip {
+  margin-top: 14px;
+  border-top: 1px solid var(--line);
+  padding-top: 12px;
+  display: grid;
+  gap: 8px;
+}
+
+.slip-title {
+  margin: 0;
+  font-size: 13px;
+  color: var(--accent);
+}
+
 .empty {
   color: var(--ink-3);
   font-size: 13px;

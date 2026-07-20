@@ -3,6 +3,7 @@ const path = require('node:path');
 const fs = require('node:fs');
 const { autoUpdater } = require('electron-updater');
 const { fetchCandidates } = require('./engine/odds');
+const { suppressSimilar, applySuppression } = require('./engine/similar');
 
 autoUpdater.autoDownload = true;
 autoUpdater.autoInstallOnAppQuit = true;
@@ -11,6 +12,7 @@ const DEFAULT_STATE = {
   startingBankroll: 1000,
   bankroll: 1000,
   bets: [],
+  suppressed: {},
   settings: {
     oddsApiKey: '',
     discordWebhook: '',
@@ -59,6 +61,7 @@ ipcMain.handle('settings:save', (_event, settings) => {
 
 ipcMain.handle('odds:refresh', async () => {
   const board = await fetchCandidates(state.settings);
+  board.candidates = applySuppression(board.candidates, state.suppressed);
   return board;
 });
 
@@ -87,6 +90,11 @@ ipcMain.handle('bet:decide', (_event, { id, decision }) => {
   const bet = state.bets.find((b) => b.id === id);
   if (bet && (decision === 'taking' || decision === 'leaving' || decision === null)) {
     bet.decision = decision;
+    if (decision === 'taking' || decision === 'leaving') {
+      // Once you've made the call on a match, other picks from that same
+      // match are noise for a bit — hide them instead of re-surfacing.
+      suppressSimilar(state.suppressed, bet.match);
+    }
     saveState(state);
   }
   return state;
