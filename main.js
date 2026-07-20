@@ -3,7 +3,7 @@ const path = require('node:path');
 const fs = require('node:fs');
 const { autoUpdater } = require('electron-updater');
 const { fetchCandidates } = require('./engine/odds');
-const { suppressSimilar, applySuppression } = require('./engine/similar');
+const { suppressSimilar, applySuppression, pruneLeftBets } = require('./engine/similar');
 
 autoUpdater.autoDownload = true;
 autoUpdater.autoInstallOnAppQuit = true;
@@ -50,8 +50,22 @@ function saveState(state) {
 }
 
 let state;
+let mainWindow;
 
-ipcMain.handle('state:get', () => state);
+function sweepLeftBets() {
+  if (!state) return;
+  const before = state.bets.length;
+  state.bets = pruneLeftBets(state.bets);
+  if (state.bets.length !== before) {
+    saveState(state);
+    mainWindow?.webContents.send('bets:pruned', state);
+  }
+}
+
+ipcMain.handle('state:get', () => {
+  sweepLeftBets();
+  return state;
+});
 
 ipcMain.handle('settings:save', (_event, settings) => {
   state.settings = { ...state.settings, ...settings };
@@ -90,11 +104,13 @@ ipcMain.handle('bet:decide', (_event, { id, decision }) => {
   const bet = state.bets.find((b) => b.id === id);
   if (bet && (decision === 'taking' || decision === 'leaving' || decision === null)) {
     bet.decision = decision;
+    bet.decidedAt = decision ? new Date().toISOString() : null;
     if (decision === 'taking' || decision === 'leaving') {
       // Once you've made the call on a match, other picks from that same
       // match are noise for a bit — hide them instead of re-surfacing.
       suppressSimilar(state.suppressed, bet.match);
     }
+    sweepLeftBets();
     saveState(state);
   }
   return state;
@@ -155,11 +171,18 @@ function createWindow() {
     },
   });
   win.loadFile(path.join(__dirname, 'renderer', 'index.html'));
+  mainWindow = win;
+  win.on('closed', () => {
+    if (mainWindow === win) mainWindow = null;
+  });
 }
 
 app.whenReady().then(() => {
   state = loadState();
   createWindow();
+
+  // Checked well inside the 5-minute "leaving" window so removal feels prompt.
+  setInterval(sweepLeftBets, 15000);
 
   // `npm start -- --smoke` verifies the app boots, then exits.
   if (process.argv.includes('--smoke')) {

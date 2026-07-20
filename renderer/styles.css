@@ -421,6 +421,16 @@ button.primary:hover {
   gap: 8px;
 }
 
+.multi-suggestion {
+  margin-bottom: 14px;
+  background: var(--panel-raise);
+  border: 1px solid var(--accent);
+  border-radius: 10px;
+  padding: 12px 14px;
+  display: grid;
+  gap: 8px;
+}
+
 .slip-title {
   margin: 0;
   font-size: 13px;

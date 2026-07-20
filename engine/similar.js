@@ -30,4 +30,19 @@ function combineLegs(legs) {
   return Math.round(combined * 100) / 100;
 }
 
-module.exports = { SUPPRESS_MS, matchKey, suppressSimilar, pruneExpired, applySuppression, combineLegs };
+// A "leaving" verdict gets a thinking window, then the entry is dropped for good.
+function pruneLeftBets(bets, now = Date.now(), ttlMs = SUPPRESS_MS) {
+  return bets.filter(
+    (b) => !(b.decision === 'leaving' && b.decidedAt && now - new Date(b.decidedAt).getTime() >= ttlMs),
+  );
+}
+
+module.exports = {
+  SUPPRESS_MS,
+  matchKey,
+  suppressSimilar,
+  pruneExpired,
+  applySuppression,
+  combineLegs,
+  pruneLeftBets,
+};

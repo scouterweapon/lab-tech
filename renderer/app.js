@@ -160,12 +160,81 @@ function renderChart(state) {
 
 /* ---------- value board ---------- */
 
+function suggestMulti(board) {
+  const groups = new Map();
+  for (const c of board.candidates) {
+    if (!groups.has(c.match)) groups.set(c.match, []);
+    groups.get(c.match).push(c);
+  }
+
+  const toLeg = (c) => ({ sport: c.sport, match: c.match, market: c.market, selection: c.selection, odds: c.bestOdds, book: c.bestBook });
+
+  let best = null;
+  for (const cands of groups.values()) {
+    if (cands.length < 2) continue;
+    const legs = cands.map(toLeg);
+    const valueScore = cands.reduce((sum, c) => sum + c.valuePct, 0);
+    if (!best || valueScore > best.valueScore) {
+      best = { legs, combined: combineLegs(legs), valueScore, single: false };
+    }
+  }
+  if (best) return best;
+
+  // No match has two legs in band yet — surface the single best-value pick
+  // as a starter so there's still something to build a multi from.
+  const top = [...board.candidates].sort((a, b) => b.valuePct - a.valuePct)[0];
+  if (!top) return null;
+  return { legs: [toLeg(top)], combined: top.bestOdds, valueScore: top.valuePct, single: true };
+}
+
+function renderSuggestion(board) {
+  const root = document.getElementById('multi-suggestion');
+  root.replaceChildren();
+
+  const suggestion = suggestMulti(board);
+  if (!suggestion) {
+    root.hidden = true;
+    return;
+  }
+  root.hidden = false;
+
+  const title = suggestion.single
+    ? `Best value right now — ${suggestion.legs[0].match} (needs a second leg from this match for a multi)`
+    : `Suggested same-game multi — ${suggestion.legs[0].match}`;
+  root.append(el('h3', 'slip-title', title));
+
+  const legs = el('ul', 'bet-legs');
+  for (const leg of suggestion.legs) {
+    legs.append(el('li', null, `${leg.selection} (${leg.market}) @ ${leg.odds.toFixed(2)} — ${leg.book}`));
+  }
+  root.append(legs);
+
+  root.append(
+    el(
+      'p',
+      'pick-detail',
+      suggestion.single
+        ? `Best single value: +${suggestion.valueScore.toFixed(1)}% vs market`
+        : `Combined odds ${suggestion.combined.toFixed(2)} · +${suggestion.valueScore.toFixed(1)}% combined value vs market`,
+    ),
+  );
+
+  const useBtn = el('button', 'primary', suggestion.single ? 'Start multi with this leg' : 'Use suggested multi');
+  useBtn.addEventListener('click', () => {
+    multiSlip = suggestion.legs.map((leg) => ({ ...leg }));
+    renderMultiSlip();
+    renderBoard(currentBoard);
+  });
+  root.append(useBtn);
+}
+
 function renderBoard(board) {
   currentBoard = board;
   const root = document.getElementById('board');
   const note = document.getElementById('board-note');
   const modeLine = document.getElementById('mode-line');
   root.replaceChildren();
+  renderSuggestion(board);
 
   if (board.source === 'sample') {
     modeLine.textContent = 'Betting lab · SAMPLE DATA — add your Odds API key in Settings for live AU odds';
@@ -466,6 +535,15 @@ async function init() {
   document.getElementById('refresh-odds').addEventListener('click', async () => {
     document.getElementById('mode-line').textContent = 'Betting lab · refreshing odds…';
     renderBoard(await window.labtech.refreshOdds());
+  });
+
+  // A "leaving" pick gets a 5-minute thinking window, then main removes it
+  // in the background and pushes the trimmed state here — no refresh needed.
+  window.labtech.onBetsPruned((state) => {
+    currentState = state;
+    renderTiles(currentState);
+    renderBets(currentState);
+    renderChart(currentState);
   });
 
   renderBoard(await window.labtech.refreshOdds());

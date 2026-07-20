@@ -1,7 +1,7 @@
 {
   "name": "lab-tech",
   "productName": "Lab Tech",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "Lab Tech — a sports betting pick bot that learns what actually works. Skeleton build.",
   "main": "main.js",
   "type": "commonjs",

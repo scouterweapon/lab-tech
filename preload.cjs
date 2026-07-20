@@ -8,4 +8,5 @@ contextBridge.exposeInMainWorld('labtech', {
   settleBet: (id, result) => ipcRenderer.invoke('bet:settle', { id, result }),
   decideBet: (id, decision) => ipcRenderer.invoke('bet:decide', { id, decision }),
   postToDiscord: (candidate) => ipcRenderer.invoke('discord:post', candidate),
+  onBetsPruned: (callback) => ipcRenderer.on('bets:pruned', (_event, state) => callback(state)),
 });
