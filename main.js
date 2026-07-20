@@ -13,6 +13,10 @@ const {
 const { learnFromSettledBet } = require('./engine/learning');
 
 const DEFAULT_AUTO_STAKE = 10;
+// ~96 refreshes/day so a month of unattended running (5 sports, 1 credit
+// each) costs about 14,400 Odds API credits — inside the $30/mo 20K plan
+// with room to spare. Free while running on sample data (no network call).
+const AUTO_REFRESH_MS = 15 * 60 * 1000;
 
 autoUpdater.autoDownload = true;
 autoUpdater.autoInstallOnAppQuit = true;
@@ -86,6 +90,8 @@ ipcMain.handle('state:get', () => {
   return state;
 });
 
+ipcMain.handle('app:version', () => app.getVersion());
+
 ipcMain.handle('settings:save', (_event, settings) => {
   state.settings = { ...state.settings, ...settings };
   saveState(state);
@@ -142,8 +148,12 @@ async function refreshBoardAndMaybeAutoLog() {
     minOdds: Number(state.settings.minOdds) || 1.7,
     maxOdds: Number(state.settings.maxOdds) || 2.5,
   };
-  const suggestion = suggestMulti(board.candidates, { ...band, model: state.model });
+  // Multi legs come from the wider (lower-floor) pool, not board.candidates —
+  // two picks each already >= minOdds would always multiply past maxOdds.
+  const legPool = applySuppression(board.legs || [], state.suppressed);
+  const suggestion = suggestMulti(legPool, { ...band, model: state.model });
   board.suggestion = suggestion;
+  delete board.legs;
   board.autoLogQualifyingMultis = Boolean(state.settings.autoLogQualifyingMultis);
 
   if (
@@ -181,6 +191,12 @@ ipcMain.handle('bet:decide', (_event, { id, decision }) => {
     sweepLeftBets();
     saveState(state);
   }
+  return state;
+});
+
+ipcMain.handle('bet:delete', (_event, id) => {
+  state.bets = state.bets.filter((b) => b.id !== id);
+  saveState(state);
   return state;
 });
 
@@ -252,6 +268,18 @@ app.whenReady().then(() => {
 
   // Checked well inside the 5-minute "leaving" window so removal feels prompt.
   setInterval(sweepLeftBets, 15000);
+
+  // Runs the odds board + suggestion + auto-log on its own, so Lab Tech
+  // keeps working (and keeps feeding the model) without anyone watching.
+  setInterval(async () => {
+    if (!state || !mainWindow) return;
+    try {
+      const board = await refreshBoardAndMaybeAutoLog();
+      mainWindow.webContents.send('board:auto-refresh', board);
+    } catch (err) {
+      console.error('Background odds refresh failed:', err.message);
+    }
+  }, AUTO_REFRESH_MS);
 
   // `npm start -- --smoke` verifies the app boots, then exits.
   if (process.argv.includes('--smoke')) {

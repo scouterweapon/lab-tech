@@ -473,6 +473,10 @@ function renderBets(state) {
     leavingBtn.addEventListener('click', () => decide(bet, 'leaving'));
     actions.append(takingBtn, leavingBtn);
 
+    const deleteBtn = el('button', 'ghost danger', 'Delete');
+    deleteBtn.addEventListener('click', () => deleteBet(bet));
+    actions.append(deleteBtn);
+
     if (bet.notes) {
       const whyBtn = el('button', 'why-btn', 'Why ▾');
       const notes = el('p', 'bet-notes', bet.notes);
@@ -495,6 +499,14 @@ async function decide(bet, decision) {
   const next = bet.decision === decision ? null : decision;
   currentState = await window.labtech.decideBet(bet.id, next);
   renderBets(currentState);
+}
+
+async function deleteBet(bet) {
+  if (!window.confirm(`Delete this bet permanently?\n\n${bet.match} — ${bet.market}`)) return;
+  currentState = await window.labtech.deleteBet(bet.id);
+  renderTiles(currentState);
+  renderBets(currentState);
+  renderChart(currentState);
 }
 
 async function settle(id, result) {
@@ -535,16 +547,21 @@ function wireSettings(state) {
 /* ---------- init ---------- */
 
 // A qualifying multi can get auto-logged as a side effect of refreshing
-// odds (main.js does it), so every refresh also re-syncs the bet log.
-async function refreshOddsAndBets() {
-  const board = await window.labtech.refreshOdds();
-  renderBoard(board);
+// odds (main.js does it), so every refresh — manual or the background
+// timer — re-syncs the bet log too.
+async function syncBetsIfAutoLogged(board) {
   if (board.autoLogged) {
     currentState = await window.labtech.getState();
     renderTiles(currentState);
     renderBets(currentState);
     renderChart(currentState);
   }
+}
+
+async function refreshOddsAndBets() {
+  const board = await window.labtech.refreshOdds();
+  renderBoard(board);
+  await syncBetsIfAutoLogged(board);
   return board;
 }
 
@@ -554,6 +571,7 @@ async function init() {
   renderBets(currentState);
   renderChart(currentState);
   wireSettings(currentState);
+  document.getElementById('app-version').textContent = `Lab Tech v${await window.labtech.getVersion()}`;
 
   document.getElementById('refresh-odds').addEventListener('click', async () => {
     document.getElementById('mode-line').textContent = 'Betting lab · refreshing odds…';
@@ -567,6 +585,13 @@ async function init() {
     renderTiles(currentState);
     renderBets(currentState);
     renderChart(currentState);
+  });
+
+  // Main also refreshes odds on its own timer, so Lab Tech keeps finding
+  // and (if you've turned it on) logging value without anyone watching.
+  window.labtech.onBoardAutoRefresh(async (board) => {
+    renderBoard(board);
+    await syncBetsIfAutoLogged(board);
   });
 
   await refreshOddsAndBets();

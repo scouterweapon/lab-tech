@@ -411,6 +411,14 @@ button.primary:hover {
   margin-left: auto;
 }
 
+button.danger {
+  color: var(--serious);
+}
+
+button.danger:hover {
+  border-color: var(--serious);
+}
+
 .bet-notes {
   margin: 4px 0 0;
   font-size: 12px;
