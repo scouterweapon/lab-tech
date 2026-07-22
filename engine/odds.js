@@ -14,10 +14,25 @@ const SPORTS = [
   { key: 'soccer_australia_aleague', label: 'Soccer · A-League' },
 ];
 
+// h2h/spreads/totals are three DIFFERENT markets on the same match — a real
+// same-game multi combines legs across these, e.g. "Team A to win" + "Over
+// 45.5 points". Combining the two outcomes WITHIN one market (Team A vs
+// Team B, or Over vs Under) is not a multi, it's betting against yourself:
+// exactly one of them always loses. suggestMulti (engine/similar.js) relies
+// on every leg here carrying a marketKey so it can enforce "one leg per
+// market type, per match" and never pair up two sides of the same market.
+const MARKET_LABELS = { h2h: 'Head to head', spreads: 'Line', totals: 'Total points' };
+
 function median(numbers) {
   const sorted = [...numbers].sort((a, b) => a - b);
   const mid = Math.floor(sorted.length / 2);
   return sorted.length % 2 ? sorted[mid] : (sorted[mid - 1] + sorted[mid]) / 2;
+}
+
+function outcomeSelection(marketKey, outcome) {
+  if (marketKey === 'h2h') return outcome.name;
+  if (outcome.point == null) return outcome.name;
+  return `${outcome.name} ${outcome.point > 0 ? '+' : ''}${outcome.point}`;
 }
 
 // Two pools come out of the same market data. `candidates` is the value
@@ -31,16 +46,20 @@ function candidatesFromEvents(events, sportLabel, band) {
   const candidates = [];
   const legs = [];
   for (const event of events) {
+    // key: `${marketKey}|${selection}` -> accumulated book prices
     const byOutcome = new Map();
     for (const book of event.bookmakers ?? []) {
-      const market = (book.markets ?? []).find((m) => m.key === 'h2h');
-      if (!market) continue;
-      for (const outcome of market.outcomes ?? []) {
-        if (!byOutcome.has(outcome.name)) byOutcome.set(outcome.name, []);
-        byOutcome.get(outcome.name).push({ book: book.title, price: outcome.price });
+      for (const market of book.markets ?? []) {
+        if (!MARKET_LABELS[market.key]) continue;
+        for (const outcome of market.outcomes ?? []) {
+          const selection = outcomeSelection(market.key, outcome);
+          const key = `${market.key}|${selection}`;
+          if (!byOutcome.has(key)) byOutcome.set(key, { marketKey: market.key, selection, prices: [] });
+          byOutcome.get(key).prices.push({ book: book.title, price: outcome.price });
+        }
       }
     }
-    for (const [selection, prices] of byOutcome) {
+    for (const { marketKey, selection, prices } of byOutcome.values()) {
       if (prices.length < 3) continue; // need a real market to compare against
       prices.sort((a, b) => b.price - a.price);
       const best = prices[0];
@@ -50,7 +69,8 @@ function candidatesFromEvents(events, sportLabel, band) {
         sport: sportLabel,
         match: `${event.home_team} vs ${event.away_team}`,
         commence: event.commence_time,
-        market: 'Head to head',
+        market: MARKET_LABELS[marketKey],
+        marketKey,
         selection,
         bestOdds: best.price,
         bestBook: best.book,
@@ -84,7 +104,7 @@ async function fetchCandidates(settings) {
     const url =
       `https://api.the-odds-api.com/v4/sports/${sport.key}/odds/` +
       `?apiKey=${encodeURIComponent(settings.oddsApiKey)}` +
-      `&regions=au&markets=h2h&oddsFormat=decimal`;
+      `&regions=au&markets=h2h,spreads,totals&oddsFormat=decimal`;
     try {
       const res = await fetch(url);
       if (!res.ok) {
@@ -106,7 +126,7 @@ async function fetchCandidates(settings) {
     fetchedAt: new Date().toISOString(),
     errors,
     candidates: allCandidates.slice(0, 15),
-    legs: allLegs.slice(0, 40),
+    legs: allLegs.slice(0, 60),
   };
 }
 
@@ -118,6 +138,7 @@ function sampleCandidates(band) {
       match: 'Sample Celtics vs Sample Lakers',
       commence: new Date(Date.now() + 8 * 3600e3).toISOString(),
       market: 'Head to head',
+      marketKey: 'h2h',
       selection: 'Sample Celtics',
       bestOdds: 2.1,
       bestBook: 'Sportsbet (sample)',
@@ -132,6 +153,7 @@ function sampleCandidates(band) {
       match: 'Sample Storm vs Sample Panthers',
       commence: new Date(Date.now() + 30 * 3600e3).toISOString(),
       market: 'Head to head',
+      marketKey: 'h2h',
       selection: 'Sample Panthers',
       bestOdds: 1.92,
       bestBook: 'PointsBet (sample)',
@@ -141,15 +163,15 @@ function sampleCandidates(band) {
       booksCompared: 7,
       sample: true,
     },
-    // Second side of the same match, priced tight enough that the combined
-    // odds still land in-band (1.92 x 1.25 = 2.40) — lets the same-game
-    // multi suggestion demo end to end without a live API key.
+    // A DIFFERENT market on the same match (totals, not h2h) — a legitimate
+    // second leg. Combined with Panthers above: 1.92 x 1.25 = 2.40, in-band.
     {
       sport: 'NRL',
       match: 'Sample Storm vs Sample Panthers',
       commence: new Date(Date.now() + 30 * 3600e3).toISOString(),
-      market: 'Alternate line',
-      selection: 'Sample Storm',
+      market: 'Total points',
+      marketKey: 'totals',
+      selection: 'Over 43.5',
       bestOdds: 1.25,
       bestBook: 'TAB (sample)',
       nextBest: '1.20 @ Sportsbet (sample)',
@@ -163,6 +185,7 @@ function sampleCandidates(band) {
       match: 'Sample Magpies vs Sample Cats',
       commence: new Date(Date.now() + 50 * 3600e3).toISOString(),
       market: 'Head to head',
+      marketKey: 'h2h',
       selection: 'Sample Cats',
       bestOdds: 2.35,
       bestBook: 'Ladbrokes (sample)',

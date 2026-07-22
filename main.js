@@ -10,6 +10,7 @@ const {
   isDuplicateMulti,
 } = require('./engine/similar');
 const { computeBankroll, computeModel } = require('./engine/learning');
+const { loadHypotheses, matchingHypothesisIds } = require('./engine/brain');
 const cloud = require('./engine/cloud');
 
 const DEFAULT_AUTO_STAKE = 10;
@@ -114,7 +115,13 @@ function createBetRecord(bet) {
 }
 
 // Builds and logs the multi Lab Tech picked on its own, when auto-log is on.
-function buildAutoMultiRecord(suggestion, band) {
+function buildAutoMultiRecord(suggestion, band, hypotheses) {
+  const hypothesisIds = suggestion.legs.flatMap((leg) =>
+    matchingHypothesisIds({ type: 'multi', sport: leg.sport, odds: suggestion.combined }, hypotheses),
+  );
+  const brainNote = hypothesisIds.length
+    ? ` Brain: leans on hypothes${hypothesisIds.length > 1 ? 'es' : 'is'} ${[...new Set(hypothesisIds)].join(', ')}.`
+    : '';
   return createBetRecord({
     sport: suggestion.legs[0].sport,
     match: suggestion.legs[0].match,
@@ -127,7 +134,8 @@ function buildAutoMultiRecord(suggestion, band) {
     legs: suggestion.legs.map((leg) => `${leg.selection} (${leg.market}) @ ${leg.odds.toFixed(2)}`),
     notes:
       `Auto-logged by Lab Tech — combined odds ${suggestion.combined.toFixed(2)} within your ` +
-      `${band.minOdds.toFixed(2)}–${band.maxOdds.toFixed(2)} band, +${suggestion.valueScore.toFixed(1)}% combined value vs market.`,
+      `${band.minOdds.toFixed(2)}–${band.maxOdds.toFixed(2)} band, +${suggestion.valueScore.toFixed(1)}% combined value vs market.` +
+      brainNote,
     auto: true,
   });
 }
@@ -141,10 +149,13 @@ async function refreshBoardAndMaybeAutoLog() {
     minOdds: Number(state.settings.minOdds) || 1.7,
     maxOdds: Number(state.settings.maxOdds) || 2.5,
   };
+  // Loaded fresh each refresh — cheap (a handful of small vault notes) and
+  // means an edited hypothesis takes effect on the very next cycle.
+  const hypotheses = loadHypotheses();
   // Multi legs come from the wider (lower-floor) pool, not board.candidates —
   // two picks each already >= minOdds would always multiply past maxOdds.
   const legPool = applySuppression(board.legs || [], suppressed);
-  const suggestion = suggestMulti(legPool, { ...band, model: state.model });
+  const suggestion = suggestMulti(legPool, { ...band, model: state.model, hypotheses });
   board.suggestion = suggestion;
   delete board.legs;
   board.autoLogQualifyingMultis = Boolean(state.settings.autoLogQualifyingMultis);
@@ -155,7 +166,7 @@ async function refreshBoardAndMaybeAutoLog() {
     state.settings.autoLogQualifyingMultis &&
     !isDuplicateMulti(state.bets, suggestion)
   ) {
-    const record = buildAutoMultiRecord(suggestion, band);
+    const record = buildAutoMultiRecord(suggestion, band, hypotheses);
     await cloud.insertBet(record);
     suppressSimilar(suppressed, suggestion.legs[0].match);
     board.autoLogged = record;

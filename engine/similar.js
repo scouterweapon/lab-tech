@@ -3,6 +3,7 @@
 // a cooldown window instead of showing redundant/contradictory outcomes.
 
 const { learnedScore } = require('./learning');
+const { brainAdjustment } = require('./brain');
 
 const SUPPRESS_MS = 5 * 60 * 1000;
 
@@ -43,11 +44,15 @@ function pruneLeftBets(bets, now = Date.now(), ttlMs = SUPPRESS_MS) {
 
 // Picks the best same-game multi on the board — legs must share a match,
 // and the COMBINED odds (not each leg) must fall inside minOdds/maxOdds.
+// Critically, legs must also come from DIFFERENT markets (h2h/spreads/
+// totals) on that match: two outcomes of the SAME market (Team A vs Team B,
+// or Over vs Under) are mutually exclusive — combining them isn't a multi,
+// it's betting against yourself, since exactly one of them always loses.
 // Ranking uses the model's learned score when given one, so the pick gets
 // smarter as more bets settle; otherwise falls back to raw market value%.
-// If no match has an in-band 2+ leg combo, returns the single best-value
-// pick as a starter so there's still something to build from.
-function suggestMulti(candidates, { minOdds, maxOdds, model } = {}) {
+// If no match has an in-band cross-market combo, returns the single
+// best-value pick as a starter so there's still something to build from.
+function suggestMulti(candidates, { minOdds, maxOdds, model, hypotheses = [] } = {}) {
   const groups = new Map();
   for (const c of candidates) {
     if (!groups.has(c.match)) groups.set(c.match, []);
@@ -58,24 +63,43 @@ function suggestMulti(candidates, { minOdds, maxOdds, model } = {}) {
     sport: c.sport,
     match: c.match,
     market: c.market,
+    marketKey: c.marketKey,
     selection: c.selection,
     odds: c.bestOdds,
     book: c.bestBook,
   });
 
-  const scoreOf = (betLike) => (model ? learnedScore(betLike, model) : (betLike.valuePct || 0) / 100);
+  const scoreOf = (betLike) =>
+    (model ? learnedScore(betLike, model) : (betLike.valuePct || 0) / 100) + brainAdjustment(betLike, hypotheses);
+
+  // Best single candidate per market type, per match — the most a legitimate
+  // multi can ever use from any one market is one leg.
+  function bestPerMarket(cands) {
+    const byMarket = new Map();
+    for (const c of cands) {
+      const key = c.marketKey || c.market;
+      const existing = byMarket.get(key);
+      if (!existing || c.valuePct > existing.valuePct) byMarket.set(key, c);
+    }
+    return [...byMarket.values()];
+  }
 
   let best = null;
   for (const cands of groups.values()) {
-    if (cands.length < 2) continue;
-    const legs = cands.map(toLeg);
-    const combined = combineLegs(legs);
-    if (minOdds != null && combined < minOdds) continue;
-    if (maxOdds != null && combined > maxOdds) continue;
-    const valueScore = cands.reduce((sum, c) => sum + c.valuePct, 0);
-    const score = scoreOf({ type: 'multi', sport: legs[0].sport, odds: combined, valuePct: valueScore });
-    if (!best || score > best.score) {
-      best = { legs, combined, valueScore, score, single: false };
+    const perMarket = bestPerMarket(cands);
+    if (perMarket.length < 2) continue;
+    for (let i = 0; i < perMarket.length; i++) {
+      for (let j = i + 1; j < perMarket.length; j++) {
+        const legs = [perMarket[i], perMarket[j]].map(toLeg);
+        const combined = combineLegs(legs);
+        if (minOdds != null && combined < minOdds) continue;
+        if (maxOdds != null && combined > maxOdds) continue;
+        const valueScore = perMarket[i].valuePct + perMarket[j].valuePct;
+        const score = scoreOf({ type: 'multi', sport: legs[0].sport, odds: combined, valuePct: valueScore });
+        if (!best || score > best.score) {
+          best = { legs, combined, valueScore, score, single: false };
+        }
+      }
     }
   }
   if (best) return best;

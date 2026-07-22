@@ -1,7 +1,7 @@
 {
   "name": "lab-tech",
   "productName": "Lab Tech",
-  "version": "0.6.0",
+  "version": "0.6.1",
   "description": "Lab Tech — a sports betting pick bot that learns what actually works. Skeleton build.",
   "main": "main.js",
   "type": "commonjs",
@@ -16,7 +16,8 @@
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.110.7",
-    "electron-updater": "^6.8.9"
+    "electron-updater": "^6.8.9",
+    "gray-matter": "^4.0.3"
   },
   "build": {
     "appId": "com.scouterweapon.labtech",
