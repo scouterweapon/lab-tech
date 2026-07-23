@@ -23,6 +23,17 @@ const SPORTS = [
 // market type, per match" and never pair up two sides of the same market.
 const MARKET_LABELS = { h2h: 'Head to head', spreads: 'Line', totals: 'Total points' };
 
+// The Odds API has no concept of "this week's round" — the closest real
+// proxy is "kicks off within the next 7 days from now," which is what this
+// enforces. Keeps the board to the current round instead of fixtures weeks
+// out (e.g. an EPL match a month away sitting next to tonight's NRL game).
+const CURRENT_WEEK_MS = 7 * 24 * 3600 * 1000;
+
+function isWithinCurrentWeek(commenceTime, now = Date.now()) {
+  const t = new Date(commenceTime).getTime();
+  return t >= now && t <= now + CURRENT_WEEK_MS;
+}
+
 function median(numbers) {
   const sorted = [...numbers].sort((a, b) => a - b);
   const mid = Math.floor(sorted.length / 2);
@@ -46,6 +57,7 @@ function candidatesFromEvents(events, sportLabel, band) {
   const candidates = [];
   const legs = [];
   for (const event of events) {
+    if (!isWithinCurrentWeek(event.commence_time)) continue;
     // key: `${marketKey}|${selection}` -> accumulated book prices
     const byOutcome = new Map();
     for (const book of event.bookmakers ?? []) {
@@ -202,4 +214,4 @@ function sampleCandidates(band) {
   };
 }
 
-module.exports = { fetchCandidates, SPORTS };
+module.exports = { fetchCandidates, SPORTS, isWithinCurrentWeek };
